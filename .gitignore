@@ -27,6 +27,7 @@ wheels/
 *.npz
 *.csv
 *.xls
+*.DS_Store
 MANIFEST
 
 # PyInstaller
