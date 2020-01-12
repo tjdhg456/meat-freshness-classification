@@ -2,9 +2,24 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 
+class EMB_cls(nn.Module):
+    def __init__(self, model, out_class=3):
+        super(EMB_cls, self).__init__()
+        self.model = model
+        for name, param in self.model.named_parameters():
+            param.requires_grad = False
+        self.linear = nn.Linear(2, out_class).cuda()
+
+    def forward(self, x):
+        x,_ = self.model(x)
+        out = self.linear(x)
+        return out
+
 class AlexNet1D(nn.Module):
-    def __init__(self, num_classes=3):
+    def __init__(self, num_classes=3, result_emb=True):
         super(AlexNet1D, self).__init__()
+        self.result_emb = result_emb
+
         self.num_classes = num_classes
         self.features = nn.Sequential(
             nn.Conv1d(1, 64, kernel_size=11, stride=4, padding=2),
@@ -28,7 +43,9 @@ class AlexNet1D(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout(),
             nn.Linear(512, 512),
-            nn.ReLU(inplace=True))
+            nn.ReLU(inplace=True),
+        )
+
 
     def up_type(self, name):
         if name == 'reg':
@@ -53,7 +70,10 @@ class AlexNet1D(nn.Module):
             return out1, out2
         else:
             out = self.out(x)
-            return out
+            if self.result_emb == True:
+                return out, x
+            else:
+                return out
 
 class ResNet1D(nn.Module):
     def __init__(self, layers=18):
