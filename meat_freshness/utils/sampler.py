@@ -38,7 +38,7 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
         self.weights = torch.DoubleTensor(weights)
 
     def _get_label(self, dataset, idx):
-        dat, label = dataset.__getitem__(idx)
+        dat, aux, label = dataset.__getitem__(idx)
         return label.item()
 
     def __iter__(self):
@@ -85,7 +85,7 @@ class Sampler(torch.utils.data.sampler.Sampler):
         self.label_to_idx = np.concatenate(self.label_to_idx, axis=0)
 
     def _get_label(self, dataset, idx):
-        dat, label = dataset.__getitem__(idx)
+        dat, aux, label = dataset.__getitem__(idx)
         return label.item()
 
     def __iter__(self):

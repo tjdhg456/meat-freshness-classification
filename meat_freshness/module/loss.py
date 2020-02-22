@@ -1,11 +1,51 @@
-import torch
-import torch.nn as nn
-
-import torch
-import torch.nn as nn
 from torch.autograd import Variable
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
 
+def focal_loss(input_values, gamma):
+    """Computes the focal loss"""
+    p = torch.exp(-input_values)
+    loss = (1 - p) ** gamma * input_values
+    return loss.mean()
+
+class FocalLoss(nn.Module):
+    def __init__(self, weight=None, gamma=0.):
+        super(FocalLoss, self).__init__()
+        assert gamma >= 0
+        self.gamma = gamma
+        self.weight = weight
+
+    def forward(self, input, target):
+        return focal_loss(F.cross_entropy(input, target, reduction='none', weight=self.weight), self.gamma)
+
+class LDAMLoss(nn.Module):
+    def __init__(self, cls_num_list, max_m=0.5, weight=None, s=30):
+        super(LDAMLoss, self).__init__()
+        m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))
+        m_list = m_list * (max_m / np.max(m_list))
+        m_list = torch.cuda.FloatTensor(m_list)
+        self.m_list = m_list
+        assert s > 0
+        self.s = s
+        self.weight = weight
+
+    def forward(self, x, target):
+        index = torch.zeros_like(x, dtype=torch.uint8)
+        index.scatter_(1, target.data.view(-1, 1), 1)
+
+        index_float = index.type(torch.cuda.FloatTensor)
+        batch_m = torch.matmul(self.m_list[None, :], index_float.transpose(0, 1))
+        batch_m = batch_m.view((-1, 1))
+        x_m = x - batch_m
+
+        output = torch.where(index, x_m, x)
+        return F.cross_entropy(self.s * output, target, weight=self.weight)
+
+
+## Center Loss
 class CenterLoss(nn.Module):
     """Center loss.
 
@@ -49,62 +89,6 @@ class CenterLoss(nn.Module):
 
         return loss
 
-class AD_CenterLoss(nn.Module):
-    def __init__(self, num_classes=10, feat_dim=2, use_gpu=True):
-        super(AD_CenterLoss, self).__init__()
-        self.num_classes = num_classes
-        self.feat_dim = feat_dim
-        self.use_gpu = use_gpu
-
-        if self.use_gpu:
-            self.centers = nn.Parameter(torch.randn(self.num_classes, self.feat_dim).cuda())
-            self.aux_centers = nn.Parameter(torch.randn(1, self.feat_dim).cuda())
-        else:
-            self.centers = nn.Parameter(torch.randn(self.num_classes, self.feat_dim))
-            self.aux_centers = nn.Parameter(torch.randn(1, self.feat_dim))
-
-    def forward(self, x, labels, aux_emb):
-        """
-        Args:
-            x: feature matrix with shape (batch_size, feat_dim).
-            labels: ground truth labels with shape (batch_size).
-        """
-        batch_size = x.size(0)
-        aux_size = aux_emb.size(0)
-
-        ## Distance
-        # x <-> Center
-        distmat = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(batch_size, self.num_classes) + \
-                  torch.pow(self.centers, 2).sum(dim=1, keepdim=True).expand(self.num_classes, batch_size).t()
-        distmat.addmm_(1, -2, x, self.centers.t())
-
-        # Calculating aux center
-        auxmat = torch.pow(aux_emb, 2).sum(dim=1, keepdim=True).expand(aux_size, 1) + \
-                  torch.pow(self.aux_centers, 2).sum(dim=1, keepdim=True).expand(1, aux_size).t()
-        auxmat.addmm_(1, -2, aux_emb, self.aux_centers.t())
-
-        # x <-> aux_center
-        dist_aux_mat = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(batch_size, 1) + \
-                  torch.pow(self.aux_centers, 2).sum(dim=1, keepdim=True).expand(1, batch_size).t()
-        dist_aux_mat.addmm_(1, -2, x, self.aux_centers.t())
-
-        classes = torch.arange(self.num_classes).long()
-        if self.use_gpu: classes = classes.cuda()
-        labels = labels.unsqueeze(1).expand(batch_size, self.num_classes)
-        mask = labels.eq(classes.expand(batch_size, self.num_classes))
-
-        dist = distmat * mask.float()
-
-        # loss = torch.min(dist.clamp(min=1e-12, max=1e+12).sum() / batch_size + \
-        #        auxmat.clamp(min=1e-12, max=1e+12).sum() / aux_size - \
-        #        dist_aux_mat.clamp(min=1e-12, max=1e+12).sum() / batch_size, 0)
-
-        loss = dist.clamp(min=1e-12, max=1e+12).sum() / batch_size + \
-               auxmat.clamp(min=1e-12, max=1e+12).sum() / aux_size
-
-        return loss
-
-
 ################################################################
 ## Triplet related loss
 ################################################################
@@ -123,18 +107,11 @@ class TripletCenterLoss(nn.Module):
         self.use_gpu = use_gpu
         if self.use_gpu == True:
             self.ranking_loss = self.ranking_loss.cuda()
-            self.centers = nn.Parameter(torch.randn(num_classes, 2).cuda())
+            self.centers = nn.Parameter(torch.randn(num_classes, num_classes).cuda())
         else:
-            self.centers = nn.Parameter(torch.randn(num_classes, 2))
+            self.centers = nn.Parameter(torch.randn(num_classes, num_classes))
 
     def forward(self, inputs, targets, emb=None):
-        if emb is not None:
-            inputs = torch.cat([inputs, emb], dim=0)
-            emb_target = (torch.ones([emb.size(0)]) * 2).long()
-            if self.use_gpu == True:
-                emb_target = emb_target.cuda()
-            targets = torch.cat([targets, emb_target], dim=0)
-
         batch_size = inputs.size(0)
         targets_expand = targets.view(batch_size, 1).expand(batch_size, inputs.size(1))
         centers_batch = self.centers.gather(0, targets_expand)  # centers batch

@@ -3,23 +3,35 @@ import torch.nn as nn
 import torch
 
 class classifier(nn.Module):
-    def __init__(self, model, in_num, out_num, gpu, init_weights=True, freeze=False):
+    def __init__(self, model, in_num, out_num, aux, gpu, init_weights=True, freeze=False):
         super(classifier, self).__init__()
         self.emb_model = model
         if freeze == True:
             for name, param in self.emb_model.named_parameters():
                 param.requires_grad = False
+
         self.classifier = nn.Linear(in_num, out_num)
+
+        self.aux = aux
+        if self.aux:
+            self.aux_layer = nn.Linear(in_num, 4)
+
         if gpu == True:
             self.classifier = self.classifier.cuda()
-
+            if self.aux:
+                self.aux_layer = self.aux_layer.cuda()
         if init_weights:
             self._initialize_weights()
 
     def forward(self, input):
         emb = self.emb_model(input)
         out = self.classifier(emb)
-        return out
+
+        if self.aux:
+            reg = self.aux_layer(emb)
+            return out, reg
+        else:
+            return out
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -38,10 +50,10 @@ class classifier(nn.Module):
 ############## AlexNet Module #####################
 ##################################################
 class AlexNet1D(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channel):
         super(AlexNet1D, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv1d(1, 64, kernel_size=11, stride=4, padding=2),
+            nn.Conv1d(in_channel, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(kernel_size=3, stride=2),
             nn.Conv1d(64, 192, kernel_size=5, padding=2),
@@ -76,7 +88,7 @@ class AlexNet1D(nn.Module):
 ############## VGG1D Module ######################
 ##################################################
 class VGG1D(nn.Module):
-    def __init__(self, layers, init_weights=True):
+    def __init__(self, in_channel, layers, init_weights=True):
         super(VGG1D, self).__init__()
 
         cfgs = {
@@ -101,7 +113,7 @@ class VGG1D(nn.Module):
         elif layers == 19:
             level = cfgs['E']
 
-        self.features = self.make_layers(level, batch_norm=batch_norm)
+        self.features = self.make_layers(in_channel, level, batch_norm=batch_norm)
         self.avgpool = nn.AdaptiveAvgPool1d(7)
         self.embedding = nn.Sequential(
             nn.Linear(512 * 7, 2048),
@@ -119,9 +131,9 @@ class VGG1D(nn.Module):
         x = self.embedding(x)
         return x
 
-    def make_layers(self, cfg, batch_norm=False):
+    def make_layers(self, in_channel, cfg, batch_norm=False):
         layers = []
-        in_channels = 1
+        in_channels = in_channel
         for ix, v in enumerate(cfg):
             if v == 'M':
                 layers += [nn.MaxPool1d(kernel_size=2, stride=2)]
@@ -144,7 +156,7 @@ class VGG1D(nn.Module):
 ############## ResNet Module #####################
 ##################################################
 class ResNet1D(nn.Module):
-    def __init__(self, layers, zero_init_residual=False,
+    def __init__(self, in_channel, layers, zero_init_residual=False,
                  groups=1, width_per_group=64, replace_stride_with_dilation=None,
                  norm_layer=None):
         super(ResNet1D, self).__init__()
@@ -178,7 +190,7 @@ class ResNet1D(nn.Module):
                              "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
         self.groups = groups
         self.base_width = width_per_group
-        self.conv1 = nn.Conv1d(1, self.inplanes, kernel_size=7, stride=2, padding=3,
+        self.conv1 = nn.Conv1d(in_channel, self.inplanes, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
