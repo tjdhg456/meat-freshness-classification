@@ -1,11 +1,13 @@
 import torch
 import torch.nn.functional as F
-from module.model import AlexNet1D, EMB_cls
+from module.model import AlexNet1D, ResNet1D, VGG1D, classifier
 import numpy as np
 import pickle
 import cv2
 import matplotlib.pyplot as plt
 import os
+import torch.nn as nn
+import torchvision.transforms.transforms as transforms
 
 class GradCAM(object):
     """Calculate GradCAM salinecy map.
@@ -48,7 +50,7 @@ class GradCAM(object):
             self.activations['value'] = output
             return None
 
-        target_layer = self.model_arch.model.features._modules['11']
+        target_layer = self.model_arch.emb_model.features._modules['12']
         target_layer.register_forward_hook(forward_hook)
         target_layer.register_backward_hook(backward_hook)
 
@@ -83,10 +85,12 @@ class GradCAM(object):
 
         saliency_map = (weights * activations).sum(1, keepdim=True)
         saliency_map = torch.unsqueeze(F.relu(saliency_map), dim=2)
-        saliency_map = F.upsample(saliency_map, size=(w,1), mode='bilinear', align_corners=False)
+        saliency_map = nn.Upsample(size=(1,w), mode='bilinear', align_corners=False)(saliency_map)
         saliency_map_min, saliency_map_max = saliency_map.min(), saliency_map.max()
         saliency_map = (saliency_map - saliency_map_min).div(saliency_map_max - saliency_map_min).data
+
         saliency_map = saliency_map.squeeze()
+
         return saliency_map, logit
 
     def __call__(self, input, class_idx=None, retain_graph=False):
@@ -157,71 +161,175 @@ class GradCAMpp(GradCAM):
 
         saliency_map = (weights * activations).sum(1, keepdim=True)
         saliency_map = torch.unsqueeze(F.relu(saliency_map), dim=2)
-        saliency_map = F.upsample(saliency_map, size=(w,1), mode='bilinear', align_corners=False)
+        saliency_map = nn.Upsample(size=(1,w), mode='bilinear', align_corners=False)(saliency_map)
         saliency_map_min, saliency_map_max = saliency_map.min(), saliency_map.max()
         saliency_map = (saliency_map - saliency_map_min).div(saliency_map_max - saliency_map_min).data
         saliency_map = saliency_map.squeeze()
         return saliency_map, logit
 
-
-## main
 # Option
-np.random.seed(42)
-torch.manual_seed(10)
+gpu = True
+cls = 0
+pp = False
+
+# Reference
+with open('../Data_pre/MeatData_0213.pkl', 'rb') as f:
+    data_meat = pickle.load(f)
+
+spec = data_meat[0][2][30:-1487]
 
 # Original Dataset
-with open('./dataset.pkl', 'rb') as f:
+with open('../met_fusion/dataset_cut.pkl', 'rb') as f:
     dataset = pickle.load(f)
 
-train_dataset = dataset['train']
-test_dataset = dataset['test']
-spec = dataset['wavelength']
+# Train and Test dataset
+tr_x = dataset['tr_x']
+tr_y = dataset['tr_y']
+tr_aux = dataset['tr_aux']
 
-# To numpy array (Train/Test Split)
-tr_x = train_dataset[:, :-1]
-tr_y = train_dataset[:,-1]
-te_x = test_dataset[:,:-1]
-te_y = test_dataset[:,-1]
+tr_m, tr_s = np.mean(tr_x), np.std(tr_x)
 
-# To torch tensor
-tr_x = torch.from_numpy(tr_x).float()
+te_x = dataset['te_x']
+te_y = dataset['te_y']
+te_aux = dataset['te_aux']
+
+# To tensor
+transform_x = transforms.Normalize([tr_m], [tr_s])
+
+tr_x = torch.unsqueeze(torch.from_numpy(tr_x).float(), dim=1)
+tr_x = transform_x(tr_x)
+
+tr_aux = torch.unsqueeze(torch.from_numpy(tr_aux).float(), dim=2)
 tr_y = torch.from_numpy(tr_y).long()
-te_x = torch.from_numpy(te_x).float()
+
+te_x = torch.unsqueeze(torch.from_numpy(te_x).float(), dim=1)
+te_x = transform_x(te_x)
+
+te_aux = torch.unsqueeze(torch.from_numpy(te_aux).float(), dim=2)
 te_y = torch.from_numpy(te_y).long()
 
-# sample
-sample_x = torch.unsqueeze(tr_x, dim=1)[[0]].cuda()
-sample_y = tr_y[0]
+# met-fusion
+tr_aux = tr_aux.repeat([1, 1, tr_x.size()[2]])
+tr_x = torch.cat([tr_x, tr_aux], dim=1)
+del tr_aux
+
+te_aux = te_aux.repeat([1, 1, te_x.size()[2]])
+te_x = torch.cat([te_x, te_aux], dim=1)
+del te_aux
+
+# Model Definition
+out_channel = 512
+model_f = AlexNet1D
+option = {}
+
+option['in_channel'] = 5
+aux = False
+
+emb = model_f(**option)
+
+if gpu == True:
+    emb = emb.cuda()
+model = classifier(emb, out_channel, 3, aux, gpu)
 
 # Load Model
-pt_name = './result3/model0_sampler3_91.07.pt'
-saved = torch.load(pt_name)
+pt_name = '../result/0223_cut/best_model.pt'
+saved = torch.load(pt_name)['model']
+model.load_state_dict(saved)
 
-model_base = AlexNet1D(num_classes=2, result_emb=True)
-model_base.up_type('cls')
-model_base = model_base.cuda()
-model = EMB_cls(model=model_base, out_class=3)
-model.load_state_dict(saved['model'])
+mask_dict = {'0':[], '1':[], '2':[]}
+graph_dict = {'0':[], '1':[], '2':[]}
 
-gradcam = GradCAM(model)
-mask, logit = gradcam(sample_x, class_idx=int(sample_y))
+for ix in range(int(tr_x.size()[0])):
+    sample_x = tr_x[[ix]].cuda()
+    sample_y = tr_y[[ix]].cuda()
 
-gradcam_plus = GradCAMpp(model)
-mask_plus, logit_plus = gradcam_plus(sample_x, class_idx=int(sample_y))
-print(mask_plus)
+    # GradCAM
+    gradcam = GradCAM(model)
+    mask, _ = gradcam(sample_x, class_idx=int(sample_y))
 
-# Visualize
-length = 10
-y = np.linspace(0,1,num=length)
-z = [[i for i in mask_plus] for j in y]
+    gradcam_plus = GradCAMpp(model)
+    mask_plus, _ = gradcam_plus(sample_x, class_idx=int(sample_y))
 
+    # Visualize
+    if pp == True:
+        del mask
+        mask = mask_plus.cpu().numpy()
+    else:
+        del mask_plus
+        mask = mask.cpu().numpy()
+
+    graph = sample_x.squeeze().cpu().numpy()[[0]]
+
+    cls_ix = int(sample_y)
+    mask_dict[str(cls_ix)].append(mask.reshape(-1))
+    graph_dict[str(cls_ix)].append(graph)
+
+## Figure for train
+spec = np.asarray(spec).reshape(-1)
 os.makedirs('./grad_result', exist_ok=True)
+for cls_ix in ['0','1','2']:
+    tr_mask = np.mean(np.asarray(mask_dict[cls_ix]), axis=0).reshape(-1)
+    tr_graph = np.mean(np.asarray(graph_dict[cls_ix]), axis=0).reshape(-1)
 
-plt.figure()
-plt.contourf(spec, y, z, alpha=0.6)
-plt.plot(spec, sample_x.squeeze().cpu().numpy())
-plt.ylim((0,1))
-plt.title('GradCAM-Average')
-plt.xlabel('Wavelength')
-plt.savefig('./grad_result/ex2.png')
-plt.close()
+    tr_mask = tr_mask[np.newaxis,:]
+
+    fig = plt.figure()
+    plt.imshow(tr_mask, cmap='coolwarm', aspect='auto', extent=[min(spec), max(spec),0,1])
+    plt.colorbar()
+    plt.plot(spec, tr_graph)
+
+    plt.ylim((0,1))
+    plt.title('GradCAM-Average:class %s' %cls_ix)
+    plt.xlabel('Wavelength')
+    plt.ylabel('Reflectance')
+    plt.savefig('./grad_result/pp_%s_tr_class%s.png' %(pp, cls_ix))
+    plt.close()
+
+# For test dataset
+del mask_dict, graph_dict, sample_x, sample_y, tr_mask, tr_graph
+
+mask_dict = {'0':[], '1':[], '2':[]}
+graph_dict = {'0':[], '1':[], '2':[]}
+
+for ix in range(int(te_x.size()[0])):
+    sample_x = te_x[[ix]].cuda()
+    sample_y = te_y[[ix]].cuda()
+
+    # GradCAM
+    gradcam = GradCAM(model)
+    mask, _ = gradcam(sample_x, class_idx=int(sample_y))
+
+    gradcam_plus = GradCAMpp(model)
+    mask_plus, _ = gradcam_plus(sample_x, class_idx=int(sample_y))
+
+    # Visualize
+    if pp == True:
+        del mask
+        mask = mask_plus.cpu().numpy()
+    else:
+        del mask_plus
+        mask = mask.cpu().numpy()
+
+    graph = sample_x.squeeze().cpu().numpy()[[0]]
+
+    cls_ix = int(sample_y)
+    mask_dict[str(cls_ix)].append(mask.reshape(-1))
+    graph_dict[str(cls_ix)].append(graph)
+
+for cls_ix in ['0','1','2']:
+    te_mask = np.mean(np.asarray(mask_dict[cls_ix]), axis=0).reshape(-1)
+    te_graph = np.mean(np.asarray(graph_dict[cls_ix]), axis=0).reshape(-1)
+
+    te_mask = te_mask[np.newaxis,:]
+
+    fig = plt.figure()
+    plt.imshow(te_mask, cmap='coolwarm', aspect='auto', extent=[min(spec), max(spec),0,1])
+    plt.colorbar()
+    plt.plot(spec, te_graph)
+
+    plt.ylim((0,1))
+    plt.title('GradCAM-Average:class %s' %cls_ix)
+    plt.xlabel('Wavelength')
+    plt.ylabel('Reflectance')
+    plt.savefig('./grad_result/pp_%s_te_class%s.png' %(pp, cls_ix))
+    plt.close()

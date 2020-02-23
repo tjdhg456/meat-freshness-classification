@@ -12,8 +12,9 @@ import torch
 
 # Basic Python Environment
 python = '/home/lilka/anaconda3/envs/nlp_/bin/python'
-stratify = True
-folder = '0222_%s_result' %stratify
+# python = '/home/gyuri/anaconda3/envs/meat/bin/python'
+
+folder = '../result/0223_final'
 print(folder)
 
 # Hyperparameter Candidate
@@ -21,8 +22,8 @@ gpu = [0,1,2,3,4,5]
 
 # Condition
 fusion = ['none', 'early', 'pred']
-train_rule = ['resample', 'none', 'reweight', 'drw']
-sampler_type = ['SMOTE', 'border']
+train_rule = ['resample', 'reweight', 'none']
+sampler_type = ['SMOTE']
 loss = ['focal', 'ce', 'ldam']
 
 comb_list = []
@@ -49,8 +50,8 @@ def tr_gpu(comb, ix):
     for i, comb_ix in enumerate(comb):
         folder_case = os.path.join(folder, str(comb_ix[4]))
         print('GPU %d : %d times' %(ix, i))
-        script = '%s main.py --epoch_num 801 --print_test False --stratify %s\
-         --gpu %d --fusion %s --train_rule %s --sampler_type %s --loss %s --log_folder %s' %(python, stratify, gpu[ix], str(comb_ix[0]),
+        script = '%s main.py --epoch_num 801 --print_test False \
+         --gpu %d --fusion %s --train_rule %s --sampler_type %s --loss %s --log_folder %s' %(python, gpu[ix], str(comb_ix[0]),
                                                                                              str(comb_ix[1]), str(comb_ix[2]),
                                                                                              str(comb_ix[3]), folder_case)
         subprocess.call(script, shell=True)
@@ -60,4 +61,3 @@ for ix in range(len(gpu)):
 
 for ix in range(len(gpu)):
     exec('thread%d.start()' %ix)
-

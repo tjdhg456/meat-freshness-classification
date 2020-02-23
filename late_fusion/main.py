@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from module.model import AlexNet1D, ResNet1D, VGG1D, classifier
+from module.model import AlexNet1D
 from module.loss import TripletCenterLoss, CenterLoss, LDAMLoss, FocalLoss
 import module.optimizer
 from imblearn.over_sampling import BorderlineSMOTE, SMOTE
@@ -24,26 +24,24 @@ import warnings
 
 ## ArgParse
 arg = argparse.ArgumentParser()
-arg.add_argument('--gpu', default='2', type=str)
-arg.add_argument('--save_data', default=False, type=lambda x: (str(x).lower() == 'true'))
+arg.add_argument('--gpu', default='3', type=str)
 arg.add_argument('--save_model', default=True, type=lambda x: (str(x).lower() == 'true'))
-arg.add_argument('--print_test', default=False, type=lambda x: (str(x).lower() == 'true'))
+arg.add_argument('--print_test', default=True, type=lambda x: (str(x).lower() == 'true'))
 arg.add_argument('--print_epoch', default=40, type=int)
 arg.add_argument('--log_folder', default='./imp', type=str)
 
 arg.add_argument('--epoch_num', default=801, type=int)
 arg.add_argument('--lr', default=1e-4, type=float)
 
-arg.add_argument('--fusion', default='early', type=str)
+arg.add_argument('--fusion', default='late', type=str)
 arg.add_argument('--train_rule', default='resample', type=str) # None, Resample, Reweight, DRW
 arg.add_argument('--sampler_type', default='smote', type=str) # binomial, up, down, SMOTE, border
 arg.add_argument('--normalize', default='select', type=str)
-arg.add_argument('--stratify', default=True, type=lambda x: (str(x).lower() == 'true'))
 
 arg.add_argument('--model', default='alexnet', type=str) # alexnet, vgg_11 ~~ , resnet_13 ~~
 arg.add_argument('--loss', default='focal', type=str) # ce, ldam, focal
 
-arg.add_argument('--LR_schedule', default=False, type=lambda x: (str(x).lower() == 'true'))
+arg.add_argument('--LR_schedule', default=True, type=lambda x: (str(x).lower() == 'true'))
 arg.add_argument('--earlystop', default=True, type=lambda x: (str(x).lower() == 'true'))
 
 args = arg.parse_args()
@@ -76,57 +74,12 @@ Data Format : [(day1, s1, [ Wavelength ], [ spectrum ], [met, oxy, deoxy, sulf],
 Data Type : text files, excel --> npz
 Data Length : 2574 (78개 샘플 x 33 days)
 '''
-if args.save_data == True:
-    with open('../Data_pre/MeatData_0213.pkl', 'rb') as f:
-        data_meat = pickle.load(f)
 
-    # Total Data
-    x_data, aux_data, y_data = [], [], []
-    for data_ in data_meat:
-        x = data_[3]
-        aux = data_[4]
-        y_raw = data_[5]
+data_name = '../met_fusion/dataset_cut.pkl'
 
-        # Continuous to Categorical label
-        if y_raw < 6.0:
-            y = 0
-        elif y_raw < 6.3:
-            y = 1
-        else:
-            y = 2
-
-        x_data += [x]
-        y_data += [y]
-        aux_data += [aux]
-
-    # Train/Test Split
-    x_data, y_data, aux_data = np.asarray(x_data), np.asarray(y_data), np.asarray(aux_data)
-    if args.stratify:
-        tr_ix, te_ix, tr_y, te_y = train_test_split(range(len(x_data)), y_data, random_state=42, test_size=0.3, stratify=y_data)
-    else:
-        tr_ix, te_ix, tr_y, te_y = train_test_split(range(len(x_data)), y_data, random_state=42, test_size=0.3)
-
-    data_dict = {'tr_x':x_data[tr_ix], 'tr_y':tr_y, 'tr_aux':aux_data[tr_ix],
-                 'te_x':x_data[te_ix], 'te_y':te_y, 'te_aux':aux_data[te_ix]}
-
-    # Save the data
-    if args.stratify:
-        data_name = './dataset.pkl'
-    else:
-        data_name = './dataset_no.pkl'
-
-    with open(data_name, 'wb') as f:
-        pickle.dump(data_dict, f)
-
-else:
-    if args.stratify:
-        data_name = './dataset.pkl'
-    else:
-        data_name = './dataset_no.pkl'
-
-    # Load the data
-    with open(data_name, 'rb') as f:
-        data_dict = pickle.load(f)
+# Load the data
+with open(data_name, 'rb') as f:
+    data_dict = pickle.load(f)
 
 tr_x = data_dict['tr_x']
 tr_y = data_dict['tr_y']
@@ -185,51 +138,20 @@ if 'alexnet' in model_name:
     out_channel = 512
     model_f = AlexNet1D
     option={}
-elif 'vgg' in model_name:
-    out_channel = 2048
-    model_f = VGG1D
-    option={}
-    option['layers'] = args.model
-elif 'resnet' in model_name:
-    model_f = ResNet1D
-    option={}
-    option['layers'] = args.model
 else:
     raise('choose right model_name')
 
 # Considering the fusion
-if args.fusion.lower() == 'none':
-    option['in_channel'] = 1
-    aux = False
-    loss_reg = None
-
-elif args.fusion.lower() == 'early':
-    option['in_channel'] = 5
-    aux = False
-    loss_reg = None
-
-elif args.fusion.lower() == 'pred':
-    option['in_channel'] = 1
-    aux = True
-    loss_reg = nn.MSELoss()
-
-else:
-    raise('Choose right fusion parameters')
-
-emb = model_f(**option)
-if 'resnet' in model_name:
-    out_channel = int(512 * emb.expansion)
-
+model = model_f(in_channel=1, train_rule=args.fusion)
 if gpu == True:
-    emb = emb.cuda()
-model = classifier(emb, out_channel, 3, aux, gpu)
+    model = model.cuda()
 
 # Optimizer
 optim_model = module.optimizer.RAdam(model.parameters(), lr=args.lr)
 
 # LR Scheduler
 if args.LR_schedule == True:
-    scheduler = StepLR(optim_model, step_size=100, gamma=0.1)
+    scheduler = StepLR(optim_model, step_size=400, gamma=0.5)
 
 # Early stopping
 if args.earlystop == True:
@@ -322,9 +244,8 @@ for epoch in range(args.epoch_num):
     elif args.loss.lower() == 'focal':
         loss_cls = FocalLoss(weight=per_cls_weights, gamma=1).cuda()
 
-    # TODO: Modifying the train and evaluation functions
     # Training
-    model = train(epoch, model, optim_model, loss_cls, loss_reg, train_loader, gpu, args)
+    model = train(epoch, model, optim_model, loss_cls, train_loader, gpu, args)
 
     if args.LR_schedule == True:
         scheduler.step()
@@ -334,7 +255,8 @@ for epoch in range(args.epoch_num):
         result = test(epoch, model, loss_cls, test_loader, gpu, args)
 
         if args.earlystop == True:
-            early(result['loss'], model, result)
+            # early(result['loss'], model, result)
+            early(-result['f1']['macro'], model, result)
             if early.early_stop == True:
                 break
 
