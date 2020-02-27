@@ -12,20 +12,33 @@ import torch
 
 # Basic Python Environment
 python = '/home/lilka/anaconda3/envs/nlp_/bin/python'
-norm = 'select'
-folder = '0221_result' + norm
+# python = '/home/gyuri/anaconda3/envs/meat/bin/python'
+
+folder = '../result/0224_final'
 print(folder)
 
 # Hyperparameter Candidate
 gpu = [0,1,2,3,4,5]
 
-lr = [1e-3] * 300 + [1e-4] * 300
-fusion = (['none'] * 100 + ['early'] * 100 + ['pred'] * 100) * 2
-comb = []
-for (lr_, fusion_) in zip(lr, fusion):
-    comb += [(lr_, fusion_, norm)]
+# Condition
+fusion = ['none', 'early', 'pred']
+train_rule = ['resample', 'reweight', 'none']
+sampler_type = ['SMOTE']
+loss = ['focal', 'ce', 'ldam']
 
-arr = np.array_split(comb, len(gpu))
+comb_list = []
+ix = 0
+num_per_gpu = 10
+for f in fusion:
+    for t in train_rule:
+        for s in sampler_type:
+            for l in loss:
+                comb_list.append([f,t,s,l, ix])
+                ix += 1
+
+comb_list = comb_list * num_per_gpu
+
+arr = np.array_split(comb_list, len(gpu))
 arr_dict = {}
 for ix in range(len(gpu)):
     arr_dict[ix] = arr[ix]
@@ -35,9 +48,12 @@ def tr_gpu(comb, ix):
     comb = comb[ix]
     os.environ['CUDA_VISIBLE_DEVICES'] = str(ix)
     for i, comb_ix in enumerate(comb):
+        folder_case = os.path.join(folder, str(comb_ix[4]))
         print('GPU %d : %d times' %(ix, i))
-        script = '%s main.py --epoch_num 801 --print_test False --gpu %d --lr %.5f --fusion %s --normalize %s --log_folder %s' %(python, gpu[ix], float(comb_ix[0]),
-                                                                                                 str(comb_ix[1]), str(comb_ix[2]), folder)
+        script = '%s main.py --epoch_num 801 --print_test False \
+         --gpu %d --fusion %s --train_rule %s --sampler_type %s --loss %s --log_folder %s' %(python, gpu[ix], str(comb_ix[0]),
+                                                                                             str(comb_ix[1]), str(comb_ix[2]),
+                                                                                             str(comb_ix[3]), folder_case)
         subprocess.call(script, shell=True)
 
 for ix in range(len(gpu)):
@@ -45,4 +61,3 @@ for ix in range(len(gpu)):
 
 for ix in range(len(gpu)):
     exec('thread%d.start()' %ix)
-

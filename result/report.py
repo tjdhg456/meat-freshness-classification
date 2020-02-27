@@ -5,7 +5,7 @@ import pandas as pd
 
 ## ArgParse
 arg = argparse.ArgumentParser()
-arg.add_argument('--save_folder', default='./0222_True_result', type=str)
+arg.add_argument('--save_folder', default='./0224_final', type=str)
 arg.add_argument('--earlystop', default=True, type=lambda x: (str(x).lower() == 'true'))
 
 args = arg.parse_args()
@@ -43,3 +43,5 @@ report = report.sort_values(by=['mean','fusion', 'train_rule', 'sampler_type', '
 
 save_name = args.save_folder + '.csv'
 report.to_csv(save_name, index=False)
+
+

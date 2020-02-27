@@ -312,8 +312,8 @@ for epoch in range(args.epoch_num):
         result = test(epoch, model, loss_cls, test_loader, gpu, args)
 
         if args.earlystop == True:
-            # early(result['loss'], model, result)
-            early(-result['f1']['macro'], model, result)
+            early(result['loss'], model, result)
+            # early(-result['f1']['macro'], model, result)
             if early.early_stop == True:
                 break
 

@@ -1,15 +1,15 @@
 import torch
 import torch.nn.functional as F
-from module.model import AlexNet1D, ResNet1D, VGG1D, classifier
+from module.model import AlexNet1D
 import numpy as np
 import pickle
+import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
 import os
 import torch.nn as nn
 import torchvision.transforms.transforms as transforms
 import argparse
-import pandas as pd
 
 class GradCAM(object):
     """Calculate GradCAM salinecy map.
@@ -52,7 +52,7 @@ class GradCAM(object):
             self.activations['value'] = output
             return None
 
-        target_layer = self.model_arch.emb_model.features._modules['12']
+        target_layer = self.model_arch.features._modules['12']
         target_layer.register_forward_hook(forward_hook)
         target_layer.register_backward_hook(backward_hook)
 
@@ -66,9 +66,9 @@ class GradCAM(object):
             mask: saliency map of the same spatial dimension with input
             logit: model output
         """
-        b, c, w = input.size()
+        b, c, w = input[0].size()
 
-        logit = self.model_arch(input)
+        logit = self.model_arch(input[0], input[1])
 
         if class_idx is None:
             score = logit[:, logit.max(1)[-1]].squeeze()
@@ -139,8 +139,8 @@ class GradCAMpp(GradCAM):
             mask: saliency map of the same spatial dimension with input
             logit: model output
         """
-        b, c, w = input.size()
-        logit = self.model_arch(input)
+        b, c, w = input[0].size()
+        logit = self.model_arch(input[0], input[1])
         if class_idx is None:
             score = logit[:, logit.max(1)[-1]].squeeze()
         else:
@@ -171,8 +171,8 @@ class GradCAMpp(GradCAM):
 
 ## ArgParse
 arg = argparse.ArgumentParser()
-arg.add_argument('--exp_num', default=13, type=int)
-arg.add_argument('--fusion', default='early', type=str)
+arg.add_argument('--exp_num', default=0, type=int)
+arg.add_argument('--fusion', default='mid', type=str)
 args = arg.parse_args()
 
 # Option
@@ -180,8 +180,8 @@ gpu = True
 pp = True
 
 exp_num = args.exp_num
-pt_name = '../result/0223_final/%d/best_model.pt' %exp_num
-fusion = args.fusion # none, early, pred
+pt_name = '../result/0223_final_late/%d/best_model.pt' %exp_num
+fusion = 'mid'
 save_folder = '../grad_result/%s/%d' %(fusion, exp_num)
 
 # Reference
@@ -223,37 +223,14 @@ te_y = torch.from_numpy(te_y).long()
 # Considering the fusion
 option = {}
 
-if fusion.lower() == 'none':
-    del tr_aux
-    del te_aux
-
-    option['in_channel'] = 1
-    aux = False
-    loss_reg = None
-
-elif fusion.lower() == 'early':
-    tr_aux = tr_aux.repeat([1, 1, tr_x.size()[2]])
-    tr_x = torch.cat([tr_x, tr_aux], dim=1)
-    del tr_aux
-
-    te_aux = te_aux.repeat([1, 1, te_x.size()[2]])
-    te_x = torch.cat([te_x, te_aux], dim=1)
-    del te_aux
-
-    option['in_channel'] = 5
-    aux = False
-    loss_reg = None
-
-
 # Model Definition
 out_channel = 512
 model_f = AlexNet1D
 
-emb = model_f(**option)
+model = model_f(in_channel=1, train_rule=fusion)
 
 if gpu == True:
-    emb = emb.cuda()
-model = classifier(emb, out_channel, 3, aux, gpu)
+    model = model.cuda()
 
 # Load Model
 saved = torch.load(pt_name)['model']
@@ -265,14 +242,15 @@ graph_dict = {'0':[], '1':[], '2':[]}
 print('Grad CAM ++ for training dataset')
 for ix in range(int(tr_x.size()[0])):
     sample_x = tr_x[[ix]].cuda()
+    sample_aux = tr_aux[[ix]].cuda().view(1,1,-1)
     sample_y = tr_y[[ix]].cuda()
 
     # GradCAM
     gradcam = GradCAM(model)
-    mask, _ = gradcam(sample_x, class_idx=int(sample_y))
+    mask, _ = gradcam([sample_x, sample_aux], class_idx=int(sample_y))
 
     gradcam_plus = GradCAMpp(model)
-    mask_plus, _ = gradcam_plus(sample_x, class_idx=int(sample_y))
+    mask_plus, _ = gradcam_plus([sample_x, sample_aux], class_idx=int(sample_y))
 
     # Visualize
     if pp == True:
@@ -306,7 +284,7 @@ for cls_ix in ['0','1','2']:
     plt.colorbar()
     plt.plot(spec, tr_graph)
 
-    plt.ylim((0.0, 1.2))
+    plt.ylim((0,1.2))
     plt.title('GradCAM-Average:class %s' %cls_ix)
     plt.xlabel('Wavelength')
     plt.ylabel('Reflectance')
@@ -315,21 +293,22 @@ for cls_ix in ['0','1','2']:
 
 # For test dataset
 print('Grad CAM ++ for evaluation dataset')
-del mask_dict, graph_dict, sample_x, sample_y, tr_mask, tr_graph, exc
+del mask_dict, graph_dict, sample_x, sample_aux, sample_y, tr_mask, tr_graph
 
 mask_dict = {'0':[], '1':[], '2':[]}
 graph_dict = {'0':[], '1':[], '2':[]}
 
 for ix in range(int(te_x.size()[0])):
     sample_x = te_x[[ix]].cuda()
+    sample_aux = te_aux[[ix]].cuda().view(1,1,-1)
     sample_y = te_y[[ix]].cuda()
 
     # GradCAM
     gradcam = GradCAM(model)
-    mask, _ = gradcam(sample_x, class_idx=int(sample_y))
+    mask, _ = gradcam([sample_x, sample_aux], class_idx=int(sample_y))
 
     gradcam_plus = GradCAMpp(model)
-    mask_plus, _ = gradcam_plus(sample_x, class_idx=int(sample_y))
+    mask_plus, _ = gradcam_plus([sample_x,sample_aux], class_idx=int(sample_y))
 
     # Visualize
     if pp == True:
@@ -360,7 +339,7 @@ for cls_ix in ['0','1','2']:
     plt.colorbar()
     plt.plot(spec, te_graph)
 
-    plt.ylim((0.0, 1.2))
+    plt.ylim((0.0,1.2))
     plt.title('GradCAM-Average:class %s' %cls_ix)
     plt.xlabel('Wavelength')
     plt.ylabel('Reflectance')
